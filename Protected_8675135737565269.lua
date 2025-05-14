@@ -30,6 +30,7 @@ function lol()
 		fakePlayer.CharacterAppearanceId = userId
 		fakePlayer.Character = Model
 		pcall(function() fakePlayer.Parent = game.Players end)
+		task.wait()
 	end
 end
 
@@ -48,7 +49,6 @@ NPCs.ChildAdded:Connect(function(child)
 	fakePlayer.CharacterAppearanceId = userId
 	fakePlayer.Character = child
 	pcall(function() fakePlayer.Parent = game.Players end)
-	task.wait()
 end)
 
 NPCs.ChildRemoved:Connect(function(child)
