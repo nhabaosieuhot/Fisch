@@ -36,19 +36,17 @@ end
 lol()
 
 NPCs.ChildAdded:Connect(function(child)
-local fakePlayer = Instance.new("Player")
-local final = ''
-for i=1,math.random(4,6) do
-final = randomChar() .. final
-end
-local userId = math.random(1000,10000)
-fakePlayer.Name = final
-fakePlayer.DisplayName = final
-fakePlayer.UserId = userId
-fakePlayer.CharacterAppearanceId = userId
-fakePlayer.Character = child
-pcall(function() fakePlayer.Parent = game.Players end)
-task.wait()
+	local fakePlayer = Instance.new("Player")
+	local final = ''
+	for i=1,math.random(4,6) do
+		final = randomChar() .. final
+	end
+	local userId = math.random(1000,10000)
+	fakePlayer.Name = final
+	fakePlayer.DisplayName = final
+	fakePlayer.UserId = userId
+	fakePlayer.CharacterAppearanceId = userId
+	fakePlayer.Character = child
+	pcall(function() fakePlayer.Parent = game.Players end)
+	task.wait()
 end)
-end
-end
