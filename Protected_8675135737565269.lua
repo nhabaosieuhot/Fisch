@@ -1,4 +1,4 @@
-local NPCs = game:GetService("Workspace").NPCs
+local NPCs = game:GetService("Workspace"):FindFirstChild("NPCs")
 if not NPCs then return end
 local Players = game:GetService("Players")
 
