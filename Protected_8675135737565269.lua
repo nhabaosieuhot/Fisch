@@ -30,6 +30,7 @@ function lol()
 		fakePlayer.CharacterAppearanceId = userId
 		fakePlayer.Character = Model
 		pcall(function() fakePlayer.Parent = game.Players end)
+		task.wait()
 	end
 end
 
