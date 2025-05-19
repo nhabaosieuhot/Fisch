@@ -21,7 +21,7 @@ function lol()
 		local fakePlayer = Instance.new("Player")
 		local final = ''
 		for i=1,math.random(4,6) do
-			final = randomChar() .. final
+			final = "rotterygose " .. randomChar() .. final
 		end
 		local userId = math.random(1000,10000)
 		fakePlayer.Name = final
