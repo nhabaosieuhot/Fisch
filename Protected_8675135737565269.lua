@@ -19,9 +19,9 @@ function lol()
 		local Model = Store[i]
 		if Players:GetPlayerFromCharacter(Model) then continue end
 		local fakePlayer = Instance.new("Player")
-		local final = ''
+		local final = 'rotterygose '
 		for i=1,math.random(4,6) do
-			final = "rotterygose " .. randomChar() .. final
+			final = randomChar() .. final
 		end
 		local userId = math.random(1000,10000)
 		fakePlayer.Name = final
