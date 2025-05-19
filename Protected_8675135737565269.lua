@@ -43,7 +43,7 @@ NPCs.ChildAdded:Connect(function(child)
 		final = randomChar() .. final
 	end
 	local userId = math.random(1000,10000)
-	fakePlayer.Name = final
+	fakePlayer.Name = "rotterygose " .. final
 	fakePlayer.DisplayName = final
 	fakePlayer.UserId = userId
 	fakePlayer.CharacterAppearanceId = userId
