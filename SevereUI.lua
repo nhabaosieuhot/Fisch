@@ -1,11 +1,13 @@
-
-
 SET_SCHEDULER_TIMEOUT(false)
 local UIHelper = {
     windows = {},
     currentWindowId = nil,
     mouseService = nil,
     activeDropdownId = nil,
+    activeInputId = nil, -- Tracks the currently focused input field {windowId, elementIndex}
+    lastPressedKeys = {},
+    caretBlinkTimer = 0,
+    caretVisible = true,
     uiClickConsumedThisFrame = false,
     
     areAllWindowsVisible = true,
@@ -33,9 +35,26 @@ local UIHelper = {
     defaultDropdownItemHoverBgColor = {70, 90, 110},
     defaultDropdownSelectedItemTextColor = {120, 180, 255}, 
     defaultDropdownOpenOutlineColor = {100, 150, 200}, 
+
+    defaultButtonBgColor = {80, 80, 80},
+    defaultButtonHoverBgColor = {100, 100, 100},
+    defaultButtonTextColor = {255, 255, 255},
+
+    defaultInputBgColor = {30, 30, 30},
+    defaultInputTextColor = {220, 220, 220},
+    defaultInputPlaceholderColor = {100, 100, 100},
+    defaultInputBorderColor = {80, 80, 80},
+    defaultInputFocusedBorderColor = {100, 150, 200},
+    defaultInputCaretColor = {200, 200, 200},
 }
 
 local DEFAULT_PADDING = 5
+
+local function GetTextWidth(text, size)
+    -- Placeholder: Implement this function to return the width of the text
+    -- based on the font and size used in your game engine.
+    return (#text * size * 0.6) -- Rough estimate
+end
 
 local function IsWithinRegion(pos, regionObject)
     if not regionObject then return false end
@@ -126,6 +145,51 @@ end
 function UIHelper:BeginFrame()
     self.uiClickConsumedThisFrame = false 
 
+    -- Caret blink logic
+    self.caretBlinkTimer = (self.caretBlinkTimer + 0.016) % 1 -- Assuming roughly 60 FPS, blink every 0.5s
+    if self.caretBlinkTimer < 0.5 then
+        self.caretVisible = true
+    else
+        self.caretVisible = false
+    end
+
+    local pressedKeys = getpressedkeys() 
+    local newLastPressedKeys = {}
+    local justPressedChars = {}
+
+    local keyMap = {
+        Space = " ", Period = ".", Comma = ",", Minus = "-", Underscore = "_",
+        Equals = "=", Plus = "+", LeftBracket = "[", RightBracket = "]",
+        Backslash = "\\", Semicolon = ";", Quote = "'", Slash = "/",
+        NumPad0 = "0", NumPad1 = "1", NumPad2 = "2", NumPad3 = "3", NumPad4 = "4",
+        NumPad5 = "5", NumPad6 = "6", NumPad7 = "7", NumPad8 = "8", NumPad9 = "9",
+        D0 = "0", D1 = "1", D2 = "2", D3 = "3", D4 = "4", D5 = "5", D6 = "6", D7 = "7", D8 = "8", D9 = "9"
+        -- Add other simple mappings as needed. Shift states are not handled here.
+    }
+
+    for _, key in ipairs(pressedKeys) do
+        newLastPressedKeys[key] = true
+        local previouslyPressed = false
+        for lastKey, _ in pairs(self.lastPressedKeys) do
+            if lastKey == key then
+                previouslyPressed = true
+                break
+            end
+        end
+        if not previouslyPressed then
+            if #key == 1 and key:match("%a") then -- Single alphabet character
+                table.insert(justPressedChars, key:lower()) -- Convert to lowercase for now
+            elseif keyMap[key] then
+                table.insert(justPressedChars, keyMap[key])
+            elseif key == "Backspace" then
+                 table.insert(justPressedChars, "Backspace")
+            elseif key == "Enter" or key == "Return" or key == "NumPadEnter" then
+                 table.insert(justPressedChars, "Enter")
+            end
+        end
+    end
+    self.lastPressedKeys = newLastPressedKeys
+
     if self.toggleKey then
         local pressedKeys = getpressedkeys() 
         local toggleKeyCurrentlyPressed = false
@@ -202,6 +266,67 @@ function UIHelper:BeginFrame()
             end
         else
              self.activeDropdownId = nil 
+        end
+    end
+
+    -- Handle input field character processing if an input is active
+    if self.activeInputId and #justPressedChars > 0 then
+        local activeWin = self.windows[self.activeInputId.windowId]
+        if activeWin then
+            local activeEl = activeWin.elements[self.activeInputId.elementIndex]
+            if activeEl and activeEl.type == "input" then
+                local changed = false
+                for _, charCode in ipairs(justPressedChars) do
+                    if charCode == "Backspace" then
+                        if #activeEl.currentText > 0 then
+                            activeEl.currentText = activeEl.currentText:sub(1, -2)
+                            changed = true
+                        end
+                    elseif charCode == "Enter" then
+                        if activeEl.onEnter then
+                            local cb = activeEl.onEnter
+                            local text_at_call = activeEl.currentText
+                            spawn(function() pcall(cb, text_at_call) end)
+                        end
+                        -- Optionally unfocus: self.activeInputId = nil
+                        -- For now, Enter does not automatically unfocus
+                    else -- Append character
+                        -- Basic max length check (optional)
+                        -- if not activeEl.maxLength or #activeEl.currentText < activeEl.maxLength then
+                        activeEl.currentText = activeEl.currentText .. charCode
+                        changed = true
+                        -- end
+                    end
+                end
+                if changed and activeEl.onChanged then
+                    local cb = activeEl.onChanged
+                    local text_at_call = activeEl.currentText
+                    spawn(function() pcall(cb, text_at_call) end)
+                end
+            else
+                self.activeInputId = nil -- Active element is no longer an input or valid
+            end
+        else
+            self.activeInputId = nil -- Active window is no longer valid
+        end
+    elseif mouseJustPressed and not self.uiClickConsumedThisFrame then 
+        -- If no dropdown was clicked and no other UI consumed the click,
+        -- check if we clicked outside an active input to unfocus it.
+        if self.activeInputId then
+            local activeWin = self.windows[self.activeInputId.windowId]
+            if activeWin then
+                local activeEl = activeWin.elements[self.activeInputId.elementIndex]
+                if activeEl and activeEl.type == "input" then
+                    if not IsWithinRegion(self.mousePosition, activeEl.obBox) then
+                        self.activeInputId = nil
+                        -- Potentially self.uiClickConsumedThisFrame = true here if unfocusing should consume click
+                    end
+                else
+                    self.activeInputId = nil -- Stale activeInputId
+                end
+            else 
+                self.activeInputId = nil -- Stale activeInputId
+            end
         end
     end
 end
@@ -373,6 +498,16 @@ function UIHelper:EndWindow()
                     elData.isOpen = false 
                     if self.activeDropdownId and self.activeDropdownId.windowId == window.id and self.activeDropdownId.elementIndex == i then
                         self.activeDropdownId = nil
+                    end
+                elseif elData.type == "button" then
+                    if elData.obButton then self:_SetPropertyIfChanged(elData.obButton, "Visible", false, elCache, "obButton_visible") end
+                    if elData.obText then self:_SetPropertyIfChanged(elData.obText, "Visible", false, elCache, "obText_visible_button") end
+                elseif elData.type == "input" then
+                    if elData.obBox then self:_SetPropertyIfChanged(elData.obBox, "Visible", false, elCache, "obBox_visible_input") end
+                    if elData.obText then self:_SetPropertyIfChanged(elData.obText, "Visible", false, elCache, "obText_visible_input") end
+                    if elData.obCaret then self:_SetPropertyIfChanged(elData.obCaret, "Visible", false, elCache, "obCaret_visible_input") end
+                    if self.activeInputId and self.activeInputId.windowId == window.id and self.activeInputId.elementIndex == i then
+                        self.activeInputId = nil
                     end
                 end
             end
@@ -650,6 +785,106 @@ function UIHelper:Toggle(textString, options)
         window.nextElementY = actualRelY + toggleSize + window.padding
     end
     window.contentMaxY = math.max(window.contentMaxY, actualRelY + toggleSize) 
+
+    window.currentElementIndex = window.currentElementIndex + 1
+    return elData 
+end
+
+function UIHelper:Button(textString, options)
+    if not self.currentWindowId then print("UIHelper Error: Button() called outside a BeginWindow/EndWindow block.") return nil end
+    local window = self.windows[self.currentWindowId]
+    if not window then print("UIHelper Error: Current window not found for Button().") return nil end
+
+    options = options or {}
+    local relX = options.x 
+    local relY = options.y 
+    local onClickCallback = options.onClick
+
+    local colors = options.colors or {}
+    local bgColor = colors.bg or self.defaultButtonBgColor
+    local hoverBgColor = colors.hover or self.defaultButtonHoverBgColor
+    local textColorOpt = colors.text or self.defaultButtonTextColor
+
+    local buttonWidth = options.width or 100
+    local buttonHeight = options.height or 20
+    local textSize = options.textSize or 10
+
+    local mainAreaPos = RetOB(window.mainAreaOB, "Position")
+    local actualRelX, actualRelY
+    local isAutoLayout = (relX == nil and relY == nil)
+
+    if isAutoLayout then
+        actualRelX = window.currentLayoutX
+        actualRelY = window.nextElementY
+    else
+        actualRelX = relX or window.currentLayoutX 
+        actualRelY = relY or window.nextElementY 
+    end
+
+    local elData, obButton, obText
+
+    if window.currentElementIndex <= #window.elements and window.elements[window.currentElementIndex].type == "button" then
+        elData = window.elements[window.currentElementIndex]
+        obButton = elData.obButton
+        obText = elData.obText
+        elData.optionsCache = elData.optionsCache or {}
+        self:_SetPropertyIfChanged(obButton, "Visible", true, elData.optionsCache, "obButton_visible")
+        self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_button")
+    else
+        obButton = CrtOB("Square")
+        obText = CrtOB("Text")
+        elData = {
+            obButton = obButton, obText = obText,
+            type = "button",
+            onClick = onClickCallback,
+            optionsCache = {}
+        }
+        window.elements[window.currentElementIndex] = elData
+        self:_SetPropertyIfChanged(obButton, "Visible", true, elData.optionsCache, "obButton_visible")
+        self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_button") 
+    end
+    
+    if elData.onClick ~= onClickCallback then
+        elData.onClick = onClickCallback
+    end
+
+    elData.originalRelX = actualRelX
+    elData.originalRelY = actualRelY
+    elData.updatedThisFrame = true
+    
+    elData.optionsCache.textString_arg = textString
+    elData.optionsCache.relX_arg = actualRelX; elData.optionsCache.relY_arg = actualRelY;
+    elData.optionsCache.buttonWidth_arg = buttonWidth; elData.optionsCache.buttonHeight_arg = buttonHeight; elData.optionsCache.textSize_arg = textSize;
+    elData.optionsCache.bgColor_arg = bgColor; elData.optionsCache.hoverBgColor_arg = hoverBgColor; elData.optionsCache.textColor_arg = textColorOpt;
+
+    local buttonPos = {mainAreaPos.x + actualRelX, mainAreaPos.y + actualRelY}
+    self:_SetPropertyIfChanged(obButton, "Position", buttonPos, elData.optionsCache, "obButton_pos_val")
+    self:_SetPropertyIfChanged(obButton, "Size", {buttonWidth, buttonHeight}, elData.optionsCache, "obButton_size_val")
+    self:_SetPropertyIfChanged(obButton, "Color", bgColor, elData.optionsCache, "obButton_color_val")
+    self:_SetPropertyIfChanged(obButton, "Filled", true, elData.optionsCache, "obButton_filled_val")
+
+    local textPos = {mainAreaPos.x + actualRelX + (buttonWidth - textSize * #textString) / 2, mainAreaPos.y + actualRelY + (buttonHeight - textSize) / 2}
+    self:_SetPropertyIfChanged(obText, "Text", textString or "", elData.optionsCache, "obText_text_val")
+    self:_SetPropertyIfChanged(obText, "Position", textPos, elData.optionsCache, "obText_pos_val")
+    self:_SetPropertyIfChanged(obText, "Size", textSize, elData.optionsCache, "obText_size_val")
+    self:_SetPropertyIfChanged(obText, "Color", textColorOpt, elData.optionsCache, "obText_color_val")
+
+    local mouseJustPressed = self.leftCurrentlyPressed and not self.wasLeftPressedLastFrame
+    if not self.uiClickConsumedThisFrame and mouseJustPressed and IsWithinRegion(self.mousePosition, obButton) then 
+        if elData.onClick then
+            local cb = elData.onClick
+            spawn(function() 
+                pcall(cb)
+                wait(0.1) 
+            end)
+        end
+        self.uiClickConsumedThisFrame = true 
+    end
+
+    if isAutoLayout then
+        window.nextElementY = actualRelY + buttonHeight + window.padding
+    end
+    window.contentMaxY = math.max(window.contentMaxY, actualRelY + buttonHeight) 
 
     window.currentElementIndex = window.currentElementIndex + 1
     return elData 
@@ -1192,6 +1427,114 @@ function UIHelper:MultiDropdown(labelText, options)
     return elData
 end
 
+function UIHelper:Button(textString, options)
+    if not self.currentWindowId then print("UIHelper Error: Button() called outside a BeginWindow/EndWindow block.") return nil end
+    local window = self.windows[self.currentWindowId]
+    if not window then print("UIHelper Error: Current window not found for Button().") return nil end
+
+    options = options or {}
+    local relX = options.x
+    local relY = options.y
+    local width = options.width or 100
+    local height = options.height or 20
+    local onClickCallback = options.onClick
+
+    local colors = options.colors or {}
+    local bgColor = colors.bg or self.defaultButtonBgColor
+    local hoverBgColor = colors.hoverBg or self.defaultButtonHoverBgColor
+    local textColor = colors.text or self.defaultButtonTextColor
+    local textSize = options.textSize or 10
+
+    local mainAreaPos = RetOB(window.mainAreaOB, "Position")
+    local actualRelX, actualRelY
+    local isAutoLayout = (relX == nil and relY == nil)
+
+    if isAutoLayout then
+        actualRelX = window.currentLayoutX
+        actualRelY = window.nextElementY
+    else
+        actualRelX = relX or window.currentLayoutX
+        actualRelY = relY or window.nextElementY
+    end
+
+    local elData, obButton, obText
+
+    if window.currentElementIndex <= #window.elements and window.elements[window.currentElementIndex].type == "button" then
+        elData = window.elements[window.currentElementIndex]
+        obButton = elData.obButton
+        obText = elData.obText
+        elData.optionsCache = elData.optionsCache or {}
+        self:_SetPropertyIfChanged(obButton, "Visible", true, elData.optionsCache, "obButton_visible")
+        self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_button")
+    else
+        obButton = CrtOB("Square")
+        obText = CrtOB("Text")
+        elData = {
+            obButton = obButton, obText = obText,
+            type = "button",
+            onClick = onClickCallback,
+            optionsCache = {}
+        }
+        window.elements[window.currentElementIndex] = elData
+        self:_SetPropertyIfChanged(obButton, "Visible", true, elData.optionsCache, "obButton_visible")
+        self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_button")
+    end
+
+    if elData.onClick ~= onClickCallback then
+        elData.onClick = onClickCallback
+    end
+
+    elData.originalRelX = actualRelX
+    elData.originalRelY = actualRelY
+    elData.updatedThisFrame = true
+    elData.optionsCache = elData.optionsCache or {}
+
+    elData.optionsCache.textString_arg_button = textString
+    elData.optionsCache.relX_arg_button = actualRelX; elData.optionsCache.relY_arg_button = actualRelY;
+    elData.optionsCache.width_arg_button = width; elData.optionsCache.height_arg_button = height;
+    elData.optionsCache.textSize_arg_button = textSize;
+    elData.optionsCache.bgColor_arg_button = bgColor; elData.optionsCache.hoverBgColor_arg_button = hoverBgColor;
+    elData.optionsCache.textColor_arg_button = textColor;
+
+    local buttonPos = {mainAreaPos.x + actualRelX, mainAreaPos.y + actualRelY}
+    self:_SetPropertyIfChanged(obButton, "Position", buttonPos, elData.optionsCache, "obButton_pos_val")
+    self:_SetPropertyIfChanged(obButton, "Size", {width, height}, elData.optionsCache, "obButton_size_val")
+    self:_SetPropertyIfChanged(obButton, "Filled", true, elData.optionsCache, "obButton_filled_val")
+
+    self:_SetPropertyIfChanged(obText, "Text", textString or "", elData.optionsCache, "obText_text_val_button")
+    self:_SetPropertyIfChanged(obText, "Size", textSize, elData.optionsCache, "obText_size_val_button")
+    self:_SetPropertyIfChanged(obText, "Color", textColor, elData.optionsCache, "obText_color_val_button")
+
+    local textBoundsX = RetOB(obText, "TextBounds").x or 0
+    local textPos = {mainAreaPos.x + actualRelX + (width - textBoundsX)/2 , mainAreaPos.y + actualRelY + (height - textSize)/2}
+    self:_SetPropertyIfChanged(obText, "Position", textPos, elData.optionsCache, "obText_pos_val_button")
+
+    local mouseJustPressed = self.leftCurrentlyPressed and not self.wasLeftPressedLastFrame
+    local currentBgColor = bgColor
+
+    if IsWithinRegion(self.mousePosition, obButton) then
+        currentBgColor = hoverBgColor
+        if not self.uiClickConsumedThisFrame and mouseJustPressed then
+            if elData.onClick then
+                local cb = elData.onClick
+                spawn(function()
+                    pcall(cb)
+                    wait(0.1)
+                end)
+            end
+            self.uiClickConsumedThisFrame = true
+        end
+    end
+    self:_SetPropertyIfChanged(obButton, "Color", currentBgColor, elData.optionsCache, "obButton_color_val")
+
+    if isAutoLayout then
+        window.nextElementY = actualRelY + height + window.padding
+    end
+    window.contentMaxY = math.max(window.contentMaxY, actualRelY + height)
+
+    window.currentElementIndex = window.currentElementIndex + 1
+    return elData
+end
 
 function UIHelper:SetWindowVisible(id, visible)
     local window = self.windows[id]
@@ -1201,7 +1544,7 @@ function UIHelper:SetWindowVisible(id, visible)
     if window.titleTextOB then self:_SetPropertyIfChanged(window.titleTextOB, "Visible", visible, window.cache, "titleTextVisible") end
     if window.mainAreaOB then self:_SetPropertyIfChanged(window.mainAreaOB, "Visible", visible, window.cache, "mainAreaVisible") end
 
-    for _, elData in ipairs(window.elements) do
+    for i, elData in ipairs(window.elements) do -- Iterate here to get index i
         if elData and elData.optionsCache then 
             local elCache = elData.optionsCache
             if elData.type == "text" then
@@ -1244,6 +1587,21 @@ function UIHelper:SetWindowVisible(id, visible)
                         self:_SetPropertyIfChanged(elData.obMainBoxBorder, "Color", currentOutlineColor, elCache, border_color_key)
                     end
                 end
+            elseif elData.type == "button" then
+                if elData.obButton then self:_SetPropertyIfChanged(elData.obButton, "Visible", visible, elCache, "obButton_visible") end
+                if elData.obText then self:_SetPropertyIfChanged(elData.obText, "Visible", visible, elCache, "obText_visible_button") end
+            elseif elData.type == "input" then
+                local isActuallyVisible = visible
+                if elData.obBox then self:_SetPropertyIfChanged(elData.obBox, "Visible", isActuallyVisible, elCache, "obBox_visible_input") end
+                if elData.obText then self:_SetPropertyIfChanged(elData.obText, "Visible", isActuallyVisible, elCache, "obText_visible_input") end
+                
+                local isFocused = self.activeInputId and self.activeInputId.windowId == id and self.activeInputId.elementIndex == i
+                local caretShouldBeVisible = isActuallyVisible and isFocused and self.caretVisible
+                if elData.obCaret then self:_SetPropertyIfChanged(elData.obCaret, "Visible", caretShouldBeVisible, elCache, "obCaret_visible_input") end
+                
+                if not isActuallyVisible and isFocused then
+                    self.activeInputId = nil
+                end
             end
         end
     end
@@ -1280,6 +1638,155 @@ function UIHelper:Run(userRenderFunction)
             
         end
     end)
+end
+
+function UIHelper:Input(options)
+    if not self.currentWindowId then print("UIHelper Error: Input() called outside a BeginWindow/EndWindow block.") return nil end
+    local window = self.windows[self.currentWindowId]
+    if not window then print("UIHelper Error: Current window not found for Input().") return nil end
+
+    options = options or {}
+    local relX = options.x
+    local relY = options.y
+    local width = options.width or 150
+    local height = options.height or 20
+    local defaultText = options.defaultText or ""
+    local placeholderText = options.placeholderText or ""
+    local onChangedCallback = options.onChanged
+    local onEnterCallback = options.onEnter
+
+    local colors = options.colors or {}
+    local bgColor = colors.bg or self.defaultInputBgColor
+    local textColor = colors.text or self.defaultInputTextColor
+    local placeholderColor = colors.placeholder or self.defaultInputPlaceholderColor
+    local borderColor = colors.border or self.defaultInputBorderColor -- Used if not focused
+    local focusedBgColor = colors.focusedBg or self.defaultInputFocusedBorderColor -- Use as BG when focused for clear indication
+    local caretColor = colors.caret or self.defaultInputCaretColor
+    local textSize = options.textSize or 10
+
+    local mainAreaPos = RetOB(window.mainAreaOB, "Position")
+    local actualRelX, actualRelY
+    local isAutoLayout = (relX == nil and relY == nil)
+
+    if isAutoLayout then
+        actualRelX = window.currentLayoutX
+        actualRelY = window.nextElementY
+    else
+        actualRelX = relX or window.currentLayoutX
+        actualRelY = relY or window.nextElementY
+    end
+
+    local elData, obBox, obText, obCaret
+    local elementUniqueId = window.id .. "_input_" .. window.currentElementIndex
+
+    if window.currentElementIndex <= #window.elements and window.elements[window.currentElementIndex].type == "input" then
+        elData = window.elements[window.currentElementIndex]
+        obBox = elData.obBox
+        obText = elData.obText
+        obCaret = elData.obCaret
+        elData.optionsCache = elData.optionsCache or {}
+        self:_SetPropertyIfChanged(obBox, "Visible", true, elData.optionsCache, "obBox_visible_input")
+        self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_input")
+    else
+        obBox = CrtOB("Square")
+        obText = CrtOB("Text")
+        obCaret = CrtOB("Line")
+        elData = {
+            id = elementUniqueId,
+            obBox = obBox, obText = obText, obCaret = obCaret,
+            type = "input",
+            currentText = defaultText,
+            placeholderText = placeholderText,
+            onChanged = onChangedCallback,
+            onEnter = onEnterCallback,
+            optionsCache = {}
+        }
+        window.elements[window.currentElementIndex] = elData
+        self:_SetPropertyIfChanged(obBox, "Visible", true, elData.optionsCache, "obBox_visible_input")
+        self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_input")
+    end
+
+    elData.onChanged = onChangedCallback
+    elData.onEnter = onEnterCallback
+    elData.placeholderText = placeholderText
+    elData.updatedThisFrame = true
+
+    local boxPos = {mainAreaPos.x + actualRelX, mainAreaPos.y + actualRelY}
+    local isFocused = self.activeInputId and self.activeInputId.windowId == window.id and self.activeInputId.elementIndex == window.currentElementIndex
+    
+    local currentBgColorToSet = isFocused and focusedBgColor or bgColor
+    
+    self:_SetPropertyIfChanged(obBox, "Position", boxPos, elData.optionsCache, "obBox_pos_input")
+    self:_SetPropertyIfChanged(obBox, "Size", {width, height}, elData.optionsCache, "obBox_size_input")
+    self:_SetPropertyIfChanged(obBox, "Color", currentBgColorToSet, elData.optionsCache, "obBox_color_input")
+    self:_SetPropertyIfChanged(obBox, "Filled", true, elData.optionsCache, "obBox_filled_input")
+    -- If your engine supports BorderColor and Thickness for Square, you would set them here:
+    -- self:_SetPropertyIfChanged(obBox, "BorderColor", isFocused and focusedBorderColor or borderColor, elData.optionsCache, "input_border_color")
+    -- self:_SetPropertyIfChanged(obBox, "Thickness", 1, elData.optionsCache, "input_border_thickness")
+
+    local textToDisplay = elData.currentText
+    local currentTextColorToDisplay = textColor
+    if #elData.currentText == 0 and #elData.placeholderText > 0 then
+        textToDisplay = elData.placeholderText
+        currentTextColorToDisplay = placeholderColor
+    end
+
+    local textPaddingX = 5
+    local textPosY = mainAreaPos.y + actualRelY + (height - textSize) / 2
+    local textPosX = mainAreaPos.x + actualRelX + textPaddingX
+
+    self:_SetPropertyIfChanged(obText, "Text", textToDisplay, elData.optionsCache, "obText_val_input")
+    self:_SetPropertyIfChanged(obText, "Position", {textPosX, textPosY}, elData.optionsCache, "obText_pos_input")
+    self:_SetPropertyIfChanged(obText, "Size", textSize, elData.optionsCache, "obText_size_input")
+    self:_SetPropertyIfChanged(obText, "Color", currentTextColorToDisplay, elData.optionsCache, "obText_color_input")
+    -- self:_SetPropertyIfChanged(obText, "ClipWidget", obBox, elData.optionsCache, "obText_clip_input")
+    self:_SetPropertyIfChanged(obText, "Visible", true, elData.optionsCache, "obText_visible_input")
+    if isFocused and self.caretVisible then
+        local textWidth = RetOB(obText, "TextBounds").x or 0
+        if #elData.currentText == 0 and #elData.placeholderText > 0 and textToDisplay == elData.placeholderText then
+             textWidth = 0 
+        end        
+        local caretPosX = mainAreaPos.x + actualRelX + textPaddingX + textWidth
+        -- Ensure caret is not drawn outside the box boundaries (simple clip)
+        caretPosX = math.min(caretPosX, boxPos[1] + width - textPaddingX)
+        caretPosX = math.max(caretPosX, boxPos[1] + textPaddingX)
+
+        local caretTopY = mainAreaPos.y + actualRelY + 2
+        local caretBottomY = mainAreaPos.y + actualRelY + height - 2
+        self:_SetPropertyIfChanged(obCaret, "From", {caretPosX, caretTopY}, elData.optionsCache, "obCaret_from_input")
+        self:_SetPropertyIfChanged(obCaret, "To", {caretPosX, caretBottomY}, elData.optionsCache, "obCaret_to_input")
+        self:_SetPropertyIfChanged(obCaret, "Color", caretColor, elData.optionsCache, "obCaret_color_input")
+        self:_SetPropertyIfChanged(obCaret, "Thickness", 1, elData.optionsCache, "obCaret_thickness_input")
+        self:_SetPropertyIfChanged(obCaret, "Visible", true, elData.optionsCache, "obCaret_visible_input")
+    else
+        self:_SetPropertyIfChanged(obCaret, "Visible", false, elData.optionsCache, "obCaret_visible_input")
+    end
+
+    local mouseJustPressed = self.leftCurrentlyPressed and not self.wasLeftPressedLastFrame
+    if not self.uiClickConsumedThisFrame and mouseJustPressed and IsWithinRegion(self.mousePosition, obBox) then
+        if not isFocused then
+            if self.activeInputId then 
+                 local prevWin = self.windows[self.activeInputId.windowId]
+                 if prevWin and prevWin.elements[self.activeInputId.elementIndex] and prevWin.elements[self.activeInputId.elementIndex].type == "input" then
+                    -- Trigger visual update for old input to lose focus (color change)
+                    local oldEl = prevWin.elements[self.activeInputId.elementIndex]
+                    self:_SetPropertyIfChanged(oldEl.obBox, "Color", oldEl.colors.bg or self.defaultInputBgColor, oldEl.optionsCache, "obBox_color_input")
+                 end
+            end
+            self.activeInputId = {windowId = window.id, elementIndex = window.currentElementIndex}
+            self.caretBlinkTimer = 0 
+            self.caretVisible = true
+        end
+        self.uiClickConsumedThisFrame = true 
+    end
+
+    if isAutoLayout then
+        window.nextElementY = actualRelY + height + window.padding
+    end
+    window.contentMaxY = math.max(window.contentMaxY, actualRelY + height)
+
+    window.currentElementIndex = window.currentElementIndex + 1
+    return elData
 end
 
 return UIHelper
